@@ -1,0 +1,31 @@
+# Profil AppArmor pour hajiz
+#
+# Permet à hajiz de créer des user namespaces non privilégiés
+# sur Ubuntu 23.10+ (où kernel.apparmor_restrict_unprivileged_userns=1 par défaut).
+#
+# Installation:
+#   sudo cp packaging/apparmor/hajiz /etc/apparmor.d/hajiz
+#   sudo apparmor_parser -r /etc/apparmor.d/hajiz
+#   # ou: sudo systemctl reload apparmor
+#
+# Désinstallation:
+#   sudo rm /etc/apparmor.d/hajiz
+#   sudo systemctl reload apparmor
+#
+# Ce profil suit le modèle de bwrap-userns-restrict (Bubblewrap):
+# le drapeau (unconfined) indique que hajiz n'est pas restreint par
+# AppArmor au-delà du droit explicite `userns,` dont il a besoin.
+# La sécurité réelle de la sandbox vient de seccomp + Landlock + namespaces
+# appliqués par hajiz lui-même au processus enfant, pas d'AppArmor.
+
+abi <abi/4.0>,
+
+include <tunables/global>
+
+profile hajiz /usr/{,local/}bin/hajiz flags=(unconfined) {
+  userns,
+
+  # Permet aux administrateurs locaux d'ajouter des règles spécifiques au site
+  # sans modifier ce fichier (ex: chemin d'installation alternatif).
+  include if exists <local/hajiz>
+}

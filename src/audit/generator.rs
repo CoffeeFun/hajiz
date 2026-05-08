@@ -1,0 +1,173 @@
+use std::fmt::Write;
+
+use super::AuditReport;
+
+pub fn generate_profile(report: &AuditReport, name: &str, binary: &str) -> String {
+    let mut out = String::new();
+    writeln!(out, "# Profil généré automatiquement par hajiz --audit").ok();
+    writeln!(out, "# Binaire: {binary}").ok();
+    writeln!(
+        out,
+        "# {} syscalls, {} chemins lus, {} chemins écrits, {} cibles réseau, \
+         {} ports connect, {} ports bind",
+        report.syscalls.len(),
+        report.paths_read.len(),
+        report.paths_written.len(),
+        report.network_addrs.len(),
+        report.connect_ports.len(),
+        report.bind_ports.len(),
+    )
+    .ok();
+    writeln!(out).ok();
+
+    writeln!(out, "name = \"{name}\"").ok();
+    writeln!(out, "description = \"profil auto-généré (audit mode)\"").ok();
+    writeln!(out).ok();
+
+    writeln!(out, "[network]").ok();
+    let observed_network =
+        !report.network_addrs.is_empty() || !report.connect_ports.is_empty() || !report.bind_ports.is_empty();
+    if !observed_network {
+        writeln!(out, "mode = \"none\"").ok();
+    } else {
+        writeln!(out, "# AVERTISSEMENT: trafic réseau observé:").ok();
+        for addr in &report.network_addrs {
+            writeln!(out, "#   - {addr}").ok();
+        }
+        writeln!(out, "mode = \"full\"").ok();
+        if !report.connect_ports.is_empty() {
+            write_u16_array(&mut out, "allow_connect", &report.connect_ports);
+        }
+        if !report.bind_ports.is_empty() {
+            write_u16_array(&mut out, "allow_bind", &report.bind_ports);
+        }
+    }
+    writeln!(out).ok();
+
+    writeln!(out, "[filesystem]").ok();
+    write_path_array(&mut out, "read_only", filter_paths(&report.paths_read, &report.paths_written));
+    write_path_array(&mut out, "read_write", report.paths_written.iter().cloned().collect());
+    writeln!(out).ok();
+
+    writeln!(out, "[seccomp]").ok();
+    writeln!(out, "hardening = true").ok();
+    writeln!(out, "allow_groups = []").ok();
+    writeln!(out, "allow_syscalls = [").ok();
+    for sc in &report.syscalls {
+        writeln!(out, "    \"{sc}\",").ok();
+    }
+    writeln!(out, "]").ok();
+
+    out
+}
+
+fn filter_paths(
+    read: &std::collections::BTreeSet<String>,
+    written: &std::collections::BTreeSet<String>,
+) -> Vec<String> {
+    read.difference(written)
+        .filter(|p| !p.is_empty() && !p.starts_with("/proc/self/"))
+        .cloned()
+        .collect()
+}
+
+fn write_path_array(out: &mut String, key: &str, paths: Vec<String>) {
+    if paths.is_empty() {
+        writeln!(out, "{key} = []").ok();
+        return;
+    }
+    writeln!(out, "{key} = [").ok();
+    for p in paths {
+        writeln!(out, "    \"{p}\",").ok();
+    }
+    writeln!(out, "]").ok();
+}
+
+fn write_u16_array(out: &mut String, key: &str, ports: &std::collections::BTreeSet<u16>) {
+    let joined: Vec<String> = ports.iter().map(|p| p.to_string()).collect();
+    writeln!(out, "{key} = [{}]", joined.join(", ")).ok();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::BTreeSet;
+
+    fn report_with(read: &[&str], write: &[&str], net: &[&str], syscalls: &[&str]) -> AuditReport {
+        AuditReport {
+            syscalls: syscalls.iter().map(|s| s.to_string()).collect(),
+            paths_read: read.iter().map(|s| s.to_string()).collect(),
+            paths_written: write.iter().map(|s| s.to_string()).collect(),
+            network_addrs: net.iter().map(|s| s.to_string()).collect(),
+            connect_ports: BTreeSet::new(),
+            bind_ports: BTreeSet::new(),
+            exit_code: 0,
+        }
+    }
+
+    #[test]
+    fn profile_no_network_disables_it() {
+        let r = report_with(&["/etc/passwd"], &[], &[], &["read", "openat"]);
+        let p = generate_profile(&r, "demo", "/usr/bin/demo");
+        assert!(p.contains("mode = \"none\""));
+        assert!(p.contains("\"/etc/passwd\""));
+        assert!(p.contains("\"openat\""));
+    }
+
+    #[test]
+    fn profile_with_network_warns() {
+        let r = report_with(&[], &[], &["8.8.8.8"], &["connect"]);
+        let p = generate_profile(&r, "net", "/usr/bin/net");
+        assert!(p.contains("mode = \"full\""));
+        assert!(p.contains("AVERTISSEMENT"));
+        assert!(p.contains("8.8.8.8"));
+    }
+
+    #[test]
+    fn profile_emits_observed_ports() {
+        let r = AuditReport {
+            connect_ports: [443u16, 80].into_iter().collect(),
+            bind_ports: [8080u16].into_iter().collect(),
+            ..Default::default()
+        };
+        let p = generate_profile(&r, "x", "/x");
+        assert!(p.contains("mode = \"full\""));
+        assert!(p.contains("allow_connect = [80, 443]"));
+        assert!(p.contains("allow_bind = [8080]"));
+    }
+
+    #[test]
+    fn profile_separates_ro_rw() {
+        let r = report_with(&["/etc/passwd", "/tmp/x"], &["/tmp/x"], &[], &[]);
+        let p = generate_profile(&r, "x", "/x");
+        let ro_section = p
+            .split("read_write")
+            .next()
+            .unwrap();
+        assert!(ro_section.contains("/etc/passwd"));
+        assert!(!ro_section.contains("\"/tmp/x\""));
+        assert!(p.contains("\"/tmp/x\""));
+    }
+
+    #[test]
+    fn profile_empty_arrays_inline() {
+        let r = AuditReport::default();
+        let p = generate_profile(&r, "empty", "/x");
+        assert!(p.contains("read_only = []"));
+        assert!(p.contains("read_write = []"));
+    }
+
+    #[test]
+    fn profile_filters_proc_self() {
+        let mut read = BTreeSet::new();
+        read.insert("/proc/self/maps".to_string());
+        read.insert("/etc/hosts".to_string());
+        let r = AuditReport {
+            paths_read: read,
+            ..Default::default()
+        };
+        let p = generate_profile(&r, "x", "/x");
+        assert!(p.contains("/etc/hosts"));
+        assert!(!p.contains("/proc/self/maps"));
+    }
+}

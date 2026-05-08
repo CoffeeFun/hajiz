@@ -1,0 +1,36 @@
+name: CI
+on:
+  push:
+  pull_request:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Installer libseccomp et apparmor-utils
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libseccomp-dev apparmor-utils
+
+      - run: cargo build --verbose
+
+      - name: Installer le binaire hajiz
+        run: sudo install -m 755 target/debug/hajiz /usr/local/bin/hajiz
+
+      - name: Charger le profil AppArmor
+        run: |
+          sudo cp packaging/apparmor/hajiz /etc/apparmor.d/hajiz
+          sudo apparmor_parser -r /etc/apparmor.d/hajiz
+          sudo aa-status | grep -q hajiz && echo "profil hajiz chargé"
+
+      - name: Diagnostic
+        run: |
+          uname -a
+          /usr/local/bin/hajiz --kernel-info
+          /usr/local/bin/hajiz /usr/bin/echo "smoke test OK"
+
+      - run: cargo test --verbose
+        env:
+          HAJIZ_BIN: /usr/local/bin/hajiz

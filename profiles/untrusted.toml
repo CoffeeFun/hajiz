@@ -1,0 +1,16 @@
+name = "untrusted"
+description = "Profil minimal pour fichiers non fiables"
+
+[network]
+mode = "none"
+
+[filesystem]
+read_only = ["/usr", "/lib", "/lib64", "/bin"]
+read_write = ["/tmp"]
+
+[seccomp]
+strict = false
+whitelist = false
+hardening = true
+allow_groups = []
+allow_syscalls = []

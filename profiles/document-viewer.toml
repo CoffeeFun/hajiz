@@ -1,0 +1,16 @@
+name = "document-viewer"
+description = "Profil pour lecteurs de documents (Evince, Okular)"
+
+[network]
+mode = "none"
+
+[filesystem]
+read_only = ["/usr", "/lib", "/lib64", "/bin", "/etc/fonts"]
+read_write = ["/tmp"]
+
+[seccomp]
+strict = false
+whitelist = false
+hardening = true
+allow_groups = ["io"]
+allow_syscalls = []

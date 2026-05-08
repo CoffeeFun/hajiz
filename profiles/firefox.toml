@@ -1,0 +1,16 @@
+name = "firefox"
+description = "Profil pour navigateur Firefox"
+
+[network]
+mode = "full"
+
+[filesystem]
+read_only = ["/usr", "/lib", "/lib64", "/bin", "/etc/fonts", "/etc/ssl"]
+read_write = ["/tmp", "/home"]
+
+[seccomp]
+strict = false
+whitelist = false
+hardening = true
+allow_groups = ["io", "memory"]
+allow_syscalls = []
