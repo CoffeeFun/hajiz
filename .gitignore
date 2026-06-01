@@ -1,7 +1,14 @@
 target/
-Cargo.lock
 *.log
 .DS_Store
 .vscode/
+.idea/
+*.swp
+*.swo
+*.orig
+.env
+*.pem
+*.key
 CONTEXT.md
+ARCHITECTURE.md
 .claude/
