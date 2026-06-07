@@ -112,17 +112,12 @@ pub mod inner {
         // Drain syscall_map by iterating keys.
         let mut syscalls: BTreeSet<String> = BTreeSet::new();
         let mut current: Option<u32> = None;
-        loop {
-            match bpf_sys::map_get_next_key_u32(syscall_fd, current)? {
-                Some(next_key) => {
-                    let name = ScmpSyscall::from(next_key as i32)
-                        .get_name_by_arch(ScmpArch::Native)
-                        .unwrap_or_else(|_| format!("syscall_{next_key}"));
-                    syscalls.insert(name);
-                    current = Some(next_key);
-                }
-                None => break,
-            }
+        while let Some(next_key) = bpf_sys::map_get_next_key_u32(syscall_fd, current)? {
+            let name = ScmpSyscall::from(next_key as i32)
+                .get_name_by_arch(ScmpArch::Native)
+                .unwrap_or_else(|_| format!("syscall_{next_key}"));
+            syscalls.insert(name);
+            current = Some(next_key);
         }
 
         // Send results back to broker as a simple line protocol.

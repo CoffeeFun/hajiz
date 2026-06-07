@@ -1,9 +1,9 @@
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use crate::error::HajizError;
 
 /// Configuration des limites de ressources
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct ResourceLimits {
     /// Limite mémoire en bytes (ex: 512 * 1024 * 1024 = 512MB)
     pub memory_bytes: Option<u64>,
@@ -11,16 +11,6 @@ pub struct ResourceLimits {
     pub cpu_percent: Option<u64>,
     /// Nombre maximum de processus
     pub max_pids: Option<u64>,
-}
-
-impl Default for ResourceLimits {
-    fn default() -> Self {
-        Self {
-            memory_bytes: None,
-            cpu_percent: None,
-            max_pids: None,
-        }
-    }
 }
 
 /// Applique les limites cgroups v2 au processus courant
@@ -67,7 +57,7 @@ fn create_cgroup(pid: u32) -> Result<PathBuf, HajizError> {
 }
 
 /// Écrit une valeur dans un fichier cgroup
-fn write_cgroup(cgroup_path: &PathBuf, file: &str, value: &str) -> Result<(), HajizError> {
+fn write_cgroup(cgroup_path: &Path, file: &str, value: &str) -> Result<(), HajizError> {
     let path = cgroup_path.join(file);
     fs::write(&path, value).map_err(|e| {
         HajizError::Isolation(format!(

@@ -37,8 +37,11 @@ impl KernelVersion {
         self.patch >= patch
     }
 
-    pub fn to_string(&self) -> String {
-        format!("{}.{}.{}", self.major, self.minor, self.patch)
+}
+
+impl std::fmt::Display for KernelVersion {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}.{}.{}", self.major, self.minor, self.patch)
     }
 }
 
@@ -83,7 +86,7 @@ impl KernelCapabilities {
     pub fn report(&self) -> String {
         format!(
             "kernel: {}\n  landlock: {}\n  landlock_net: {}\n  cgroups_v2: {}\n  seccomp_notify: {}\n  user_namespaces: {}",
-            self.version.to_string(),
+            self.version,
             if self.landlock { "✓" } else { "✗ (kernel >= 5.13 requis)" },
             if self.landlock_net { "✓" } else { "✗ (kernel >= 6.7 requis)" },
             if self.cgroups_v2 { "✓" } else { "✗ (kernel >= 4.5 requis)" },

@@ -322,7 +322,7 @@ fn main() {
         );
         let outcome = sandbox.monitor();
         monitors.stop();
-        outcome.map(|status| {
+        outcome.inspect(|status| {
             use std::os::unix::process::ExitStatusExt;
             logger.log(&SecurityEvent::SandboxExited {
                 pid: child_pid,
@@ -330,7 +330,6 @@ fn main() {
                 signal: status.signal(),
                 timestamp: SystemTime::now(),
             });
-            status
         })
     });
 

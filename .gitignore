@@ -10,5 +10,18 @@ target/
 *.pem
 *.key
 CONTEXT.md
-ARCHITECTURE.md
 .claude/
+
+# Rust
+*.rs.bk
+
+# Debug / profiling artifacts
+core
+core.*
+vgcore.*
+perf.data
+perf.data.old
+
+# Locally-compiled C artifacts (probes/escapes build in Docker, never the tree)
+*.o
+*.out
