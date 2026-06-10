@@ -77,8 +77,8 @@ pub fn setup_landlock(config: &IsolationConfig, skip_landlock: bool) -> Result<(
     if skip_landlock {
         if want_fs || want_net {
             eprintln!(
-                "[hajiz] avertissement: Landlock non disponible (kernel < 5.13), \
-                 {} règles fs / {} ports connect / {} ports bind ignorés",
+                "[hajiz] warning: Landlock unavailable (kernel < 5.13), \
+                 {} fs rules / {} connect ports / {} bind ports ignored",
                 config.filesystem_rules.len(),
                 config.allow_connect_ports.len(),
                 config.allow_bind_ports.len(),
@@ -96,8 +96,8 @@ pub fn setup_landlock(config: &IsolationConfig, skip_landlock: bool) -> Result<(
 
     if want_net && !net_supported {
         eprintln!(
-            "[hajiz] avertissement: Landlock ABI < 4 (kernel < 6.7), \
-             règles réseau ignorées — utilisez network_mode=none pour bloquer tout le trafic"
+            "[hajiz] warning: Landlock ABI < 4 (kernel < 6.7), \
+             network rules ignored — use network_mode=none to block all traffic"
         );
     }
 

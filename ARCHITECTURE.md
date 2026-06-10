@@ -87,8 +87,6 @@ build.rs                           ★ NEW — compiles bpf/*.c with clang -targ
 tests/
 ├── exploit_tests.rs               integration tests against the compiled binary
 ├── escape_tests.rs                active escape attempts (attacks the sandbox)
-├── integration_tests.rs           scaffold
-├── namespace_tests.rs             scaffold
 └── container/                     Docker-based escape probes (atomics, CVEs)
 
 profiles/
@@ -140,6 +138,9 @@ When you run `hajiz <binary>`, the parent process forks via `Command::spawn` wit
                                                                 │
                                                                 │  4. apply_seccomp
                                                                 │     hardening-deny (default) | allowlist | strict
+                                                                │     hardening denies: unshare, setns, clone3, bpf,
+                                                                │       userfaultfd, add_key, request_key, keyctl,
+                                                                │       ptrace, process_vm_readv, process_vm_writev
                                                                 │     installs BPF filter via prctl(PR_SET_SECCOMP)
                                                                 │
                                                                 │  5. exec(binary, args)
@@ -302,6 +303,8 @@ That's all the BPF syscall surface the sandbox needs.
 ### Limitation of the eBPF backend
 
 Currently only **syscall names** are populated in `AuditReport`. The strace backend additionally extracts file paths (from `openat` args) and network addresses (from `connect`/`bind`). To match that with eBPF you'd add a `BPF_MAP_TYPE_RINGBUF`, hook `tracepoint/syscalls/sys_enter_openat`, `bpf_probe_read_user_str()` the path arg into the ringbuf, and drain it in the broker. Future work.
+
+A second, smaller gap: the sandbox `spawn()`s the target (fork+exec) **before** it writes the target PID into `config_map`, so the few syscalls the target makes between exec and the filter being armed can be missed. The window is tiny and only affects audit completeness (never real-run isolation), but it means a generated profile may under-approximate the very earliest calls. Closing it would mean arming the filter on a known PID before exec (e.g. an extra fork, or a stop-on-exec + map-update + continue dance).
 
 ---
 

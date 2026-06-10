@@ -11,13 +11,13 @@ use nix::libc;
 use crate::{error::HajizError, isolation::IsolationConfig};
 
 pub fn apply_seccomp(config: &IsolationConfig) -> Result<(), HajizError> {
+    // Precedence: an explicitly requested mode (whitelist or strict) overrides
+    // the default-on hardening filter. The hardening filter is the fallback when
+    // the user asked for nothing more specific. Checking strict before hardening
+    // is what makes `--strict-seccomp` take effect without also needing
+    // `--no-hardening` (the two explicit modes are stricter than hardening anyway).
     if config.use_seccomp_whitelist {
         apply_whitelist_filter(config)?;
-        return Ok(());
-    }
-
-    if config.enable_hardening_filter {
-        apply_hardening_filter(config.kill_on_deny)?;
         return Ok(());
     }
 
@@ -29,6 +29,12 @@ pub fn apply_seccomp(config: &IsolationConfig) -> Result<(), HajizError> {
                 "failed to enable strict seccomp mode: {err}"
             )));
         }
+        return Ok(());
+    }
+
+    if config.enable_hardening_filter {
+        apply_hardening_filter(config.kill_on_deny)?;
+        return Ok(());
     }
 
     Ok(())
@@ -84,9 +90,9 @@ pub fn hardened_denied_syscalls() -> &'static [&'static str] {
         "add_key",
         "request_key",
         "keyctl",
-        // Bloque l'injection de processus (T1055.008) : ptrace pour
-        // l'attache classique, process_vm_readv/writev pour la lecture-
-        // écriture directe de mémoire qui contourne ptrace.
+        // Block process injection (T1055.008): ptrace for the classic
+        // attach, process_vm_readv/writev for direct memory read/write
+        // that bypasses ptrace.
         "ptrace",
         "process_vm_readv",
         "process_vm_writev",
@@ -270,6 +276,50 @@ mod tests {
         assert!(denied.contains(&"ptrace"));
         assert!(denied.contains(&"process_vm_readv"));
         assert!(denied.contains(&"process_vm_writev"));
+    }
+
+    #[test]
+    fn strict_seccomp_overrides_default_hardening() {
+        // Regression test for the seccomp precedence fix: when --strict-seccomp
+        // is requested while the default hardening filter is still enabled,
+        // strict mode must win. Under SECCOMP_MODE_STRICT only read/write/exit/
+        // sigreturn are allowed, so socket() gets the process SIGKILL'd. If the
+        // hardening filter were applied instead (the old buggy behavior),
+        // socket() would be allowed and the child would exit 7.
+        let config = IsolationConfig {
+            strict_seccomp: true,
+            enable_hardening_filter: true, // default-on; strict must override it
+            ..IsolationConfig::default()
+        };
+
+        let fork_result = unsafe { fork() }.expect("fork should succeed");
+        match fork_result {
+            ForkResult::Parent { child } => {
+                let status = waitpid(child, None).expect("waitpid should succeed");
+                match status {
+                    WaitStatus::Signaled(_, signal, _) => {
+                        assert_eq!(
+                            signal,
+                            nix::sys::signal::Signal::SIGKILL,
+                            "strict seccomp must SIGKILL on a non-allowed syscall"
+                        );
+                    }
+                    other => panic!(
+                        "expected child SIGKILL'd by strict seccomp, got {other:?} \
+                         (hardening filter was applied instead of strict?)"
+                    ),
+                }
+            }
+            ForkResult::Child => {
+                if apply_seccomp(&config).is_err() {
+                    unsafe { libc::_exit(2) };
+                }
+                // socket() is not in the strict allowlist → kernel kills us.
+                let _ = unsafe { libc::socket(libc::AF_INET, libc::SOCK_STREAM, 0) };
+                // Reached only if strict was NOT applied (i.e. the bug regressed).
+                unsafe { libc::_exit(7) };
+            }
+        }
     }
 
     #[test]

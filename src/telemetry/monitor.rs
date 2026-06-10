@@ -77,11 +77,11 @@ fn spawn_kmsg_reader(
         Err(e) => {
             if e.kind() == ErrorKind::PermissionDenied {
                 eprintln!(
-                    "[hajiz:monitor] /dev/kmsg lecture refusée — \
-                     SyscallDenied désactivé (root ou kernel.dmesg_restrict=0 requis)"
+                    "[hajiz:monitor] /dev/kmsg read denied — \
+                     SyscallDenied disabled (requires root or kernel.dmesg_restrict=0)"
                 );
             } else if e.kind() != ErrorKind::NotFound {
-                eprintln!("[hajiz:monitor] ouverture /dev/kmsg échouée: {e}");
+                eprintln!("[hajiz:monitor] failed to open /dev/kmsg: {e}");
             }
             return None;
         }

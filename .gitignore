@@ -10,7 +10,12 @@ target/
 *.pem
 *.key
 CONTEXT.md
+
+# Claude / AI assistant artifacts — local only, never pushed
 .claude/
+CLAUDE.md
+graphify-out/
+
 
 # Rust
 *.rs.bk

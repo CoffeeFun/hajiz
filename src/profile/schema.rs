@@ -1,38 +1,38 @@
 use serde::Deserialize;
 
-/// Configuration complète d'un profil de sandboxing
+/// Complete configuration of a sandboxing profile
 #[derive(Debug, Clone, Deserialize)]
 pub struct Profile {
-    /// Nom du profil (ex: "firefox", "untrusted")
+    /// Profile name (e.g. "firefox", "untrusted")
     pub name: String,
 
-    /// Description du profil
+    /// Profile description
     pub description: Option<String>,
 
-    /// Configuration réseau
+    /// Network configuration
     #[serde(default)]
     pub network: NetworkConfig,
 
-    /// Configuration filesystem
+    /// Filesystem configuration
     #[serde(default)]
     pub filesystem: FilesystemConfig,
 
-    /// Configuration seccomp
+    /// Seccomp configuration
     #[serde(default)]
     pub seccomp: SeccompConfig,
 }
 
-/// Configuration réseau du profil
+/// Network configuration of the profile
 ///
-/// `mode` accepte trois valeurs:
-/// - `"none"` (défaut): propre namespace réseau, aucune interface — pas d'accès réseau
-/// - `"loopback"`: propre namespace réseau avec `lo` activé — services locaux 127.0.0.1 uniquement
-/// - `"full"`: partage du namespace réseau de l'hôte — accès réseau complet
+/// `mode` accepts three values:
+/// - `"none"` (default): own network namespace, no interface — no network access
+/// - `"loopback"`: own network namespace with `lo` up — local 127.0.0.1 services only
+/// - `"full"`: shares the host network namespace — full network access
 ///
-/// `allow_connect` / `allow_bind` (optionnels): listes blanches de ports TCP
-/// appliquées par Landlock (kernel >= 6.7). Si non vide, seuls les ports listés
-/// sont autorisés pour `connect()` (sortant) et `bind()` (écoute) respectivement.
-/// Indépendant de `mode` — fonctionne aussi en mode `full`.
+/// `allow_connect` / `allow_bind` (optional): TCP port allowlists enforced by
+/// Landlock (kernel >= 6.7). If non-empty, only the listed ports are allowed for
+/// `connect()` (outbound) and `bind()` (listen) respectively. Independent of
+/// `mode` — also works in `full` mode.
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct NetworkConfig {
     #[serde(default = "default_network_mode")]
@@ -47,38 +47,38 @@ fn default_network_mode() -> String {
     "none".to_string()
 }
 
-/// Configuration filesystem du profil
+/// Filesystem configuration of the profile
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct FilesystemConfig {
-    /// Chemins autorisés en lecture seule
+    /// Paths allowed read-only
     #[serde(default)]
     pub read_only: Vec<String>,
 
-    /// Chemins autorisés en lecture/écriture
+    /// Paths allowed read/write
     #[serde(default)]
     pub read_write: Vec<String>,
 }
 
-/// Configuration seccomp du profil
+/// Seccomp configuration of the profile
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct SeccompConfig {
-    /// Activer le mode strict
+    /// Enable strict mode
     #[serde(default)]
     pub strict: bool,
 
-    /// Activer le mode allowlist
+    /// Enable allowlist mode
     #[serde(default)]
     pub whitelist: bool,
 
-    /// Activer le filtre de durcissement
+    /// Enable the hardening filter
     #[serde(default = "default_true")]
     pub hardening: bool,
 
-    /// Groupes de syscalls autorisés
+    /// Allowed syscall groups
     #[serde(default)]
     pub allow_groups: Vec<String>,
 
-    /// Syscalls individuels autorisés
+    /// Individually allowed syscalls
     #[serde(default)]
     pub allow_syscalls: Vec<String>,
 }

@@ -21,7 +21,7 @@ pub struct AuditReport {
 pub fn run_audit(binary: &str, args: &[String]) -> Result<AuditReport, HajizError> {
     if Command::new("strace").arg("--version").output().is_err() {
         return Err(HajizError::Config(
-            "strace n'est pas installé (paquet 'strace' requis)".into(),
+            "strace is not installed (the 'strace' package is required)".into(),
         ));
     }
 
@@ -31,7 +31,7 @@ pub fn run_audit(binary: &str, args: &[String]) -> Result<AuditReport, HajizErro
         .args(["-f", "-e", "trace=all", "-o", &log_path, "--", binary])
         .args(args)
         .status()
-        .map_err(|e| HajizError::Isolation(format!("strace n'a pas pu démarrer: {e}")))?;
+        .map_err(|e| HajizError::Isolation(format!("strace failed to start: {e}")))?;
 
     let mut report = parse_strace_log(Path::new(&log_path))?;
     report.exit_code = status.code().unwrap_or(-1);

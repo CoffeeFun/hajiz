@@ -1,5 +1,5 @@
 name = "media-player"
-description = "Profil pour lecteurs multimédia (VLC, MPV)"
+description = "Profile for media players (VLC, MPV)"
 
 [network]
 mode = "full"

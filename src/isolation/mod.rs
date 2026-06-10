@@ -98,7 +98,7 @@ pub fn apply_in_child(config: &IsolationConfig) -> Result<(), HajizError> {
 
     let skip_ns = kernel_caps.as_ref().map(|k| !k.user_namespaces).unwrap_or(false);
     if skip_ns {
-        eprintln!("[hajiz] avertissement: user namespaces non disponibles (kernel < 3.8)");
+        eprintln!("[hajiz] warning: user namespaces unavailable (kernel < 3.8)");
     } else {
         namespaces::setup_namespaces(config)?;
     }

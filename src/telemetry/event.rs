@@ -1,37 +1,37 @@
 use std::time::SystemTime;
 
-/// Types d'événements de sécurité émis par le sandbox
+/// Types of security events emitted by the sandbox
 #[derive(Debug, Clone)]
 pub enum SecurityEvent {
-    /// Sandbox démarré
+    /// Sandbox started
     SandboxStarted {
         pid: u32,
         binary: String,
         profile: Option<String>,
         timestamp: SystemTime,
     },
-    /// Syscall refusé par seccomp
+    /// Syscall denied by seccomp
     SyscallDenied {
         pid: u32,
         syscall: String,
         timestamp: SystemTime,
     },
-    /// Accès filesystem refusé
+    /// Filesystem access denied
     FilesystemDenied {
         pid: u32,
         path: String,
         timestamp: SystemTime,
     },
-    /// Sandbox terminé
+    /// Sandbox finished
     SandboxExited {
         pid: u32,
         exit_code: i32,
-        /// Numéro du signal qui a tué le processus (None = sortie normale).
-        /// SIGSYS (31) indique typiquement un kill seccomp via KILL_PROCESS.
+        /// Number of the signal that killed the process (None = normal exit).
+        /// SIGSYS (31) typically indicates a seccomp kill via KILL_PROCESS.
         signal: Option<i32>,
         timestamp: SystemTime,
     },
-    /// Politique d'isolation appliquée avant le spawn
+    /// Isolation policy applied before spawn
     PolicyApplied {
         pid: u32,
         blocked_syscalls: Vec<String>,
@@ -39,7 +39,7 @@ pub enum SecurityEvent {
         features: String,
         timestamp: SystemTime,
     },
-    /// Échantillon périodique de l'utilisation des ressources cgroup
+    /// Periodic sample of cgroup resource usage
     ResourceUsage {
         pid: u32,
         memory_current: u64,
@@ -50,7 +50,7 @@ pub enum SecurityEvent {
 }
 
 impl SecurityEvent {
-    /// Retourne le timestamp de l'événement
+    /// Returns the event timestamp
     pub fn timestamp(&self) -> SystemTime {
         match self {
             Self::SandboxStarted { timestamp, .. } => *timestamp,
@@ -62,7 +62,7 @@ impl SecurityEvent {
         }
     }
 
-    /// Retourne le nom de l'événement
+    /// Returns the event name
     pub fn name(&self) -> &str {
         match self {
             Self::SandboxStarted { .. } => "sandbox_started",
@@ -74,7 +74,7 @@ impl SecurityEvent {
         }
     }
 
-    /// Formate l'événement en JSON simple
+    /// Formats the event as simple JSON
     pub fn to_json(&self) -> String {
         let ts = self
             .timestamp()

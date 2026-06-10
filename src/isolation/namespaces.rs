@@ -23,8 +23,9 @@ pub fn setup_namespaces(config: &IsolationConfig) -> Result<(), HajizError> {
         flags |= CloneFlags::CLONE_NEWNET;
     }
 
-    unshare(flags)
-        .map_err(|e| HajizError::Isolation(format!("failed to unshare namespaces: {e}")))?;
+    unshare(flags).map_err(|e| {
+        HajizError::Isolation(format!("failed to unshare namespaces: {e}{}", userns_hint(e)))
+    })?;
 
     // Deny setgroups before writing gid_map (required by kernel)
     std::fs::write("/proc/self/setgroups", "deny")
@@ -54,6 +55,29 @@ pub fn setup_namespaces(config: &IsolationConfig) -> Result<(), HajizError> {
     }
 
     Ok(())
+}
+
+/// On an `EPERM` from `unshare(CLONE_NEWUSER)`, return a hint string explaining
+/// the most common cause. Ubuntu 23.10+ ships
+/// `kernel.apparmor_restrict_unprivileged_userns=1`, which blocks unprivileged
+/// user namespaces unless the binary has an AppArmor profile granting `userns,`.
+/// Returns an empty string for any other error or platform.
+fn userns_hint(err: nix::errno::Errno) -> String {
+    if err != nix::errno::Errno::EPERM {
+        return String::new();
+    }
+    let restricted = std::fs::read_to_string("/proc/sys/kernel/apparmor_restrict_unprivileged_userns")
+        .map(|v| v.trim() == "1")
+        .unwrap_or(false);
+    if restricted {
+        "\n[hajiz] kernel.apparmor_restrict_unprivileged_userns=1 (Ubuntu 23.10+) \
+         blocks unprivileged user namespaces. Install the bundled AppArmor \
+         profile:\n  sudo cp packaging/apparmor/hajiz /etc/apparmor.d/hajiz\n  \
+         sudo systemctl reload apparmor"
+            .to_string()
+    } else {
+        String::new()
+    }
 }
 
 fn bring_loopback_up() -> Result<(), HajizError> {

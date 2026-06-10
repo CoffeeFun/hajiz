@@ -73,10 +73,14 @@ profile (below) to ship a reusable rule set.
 | `full` | Shares the host network. Still honors port allowlists on kernel ≥ 6.7. |
 
 On a Landlock-network-capable kernel you can restrict TCP ports even in `full`
-mode (both flags are repeatable):
+mode. Both flags are repeatable and each value is either a single port or an
+inclusive range (`START-END`):
 
 ```bash
 hajiz --net full --allow-connect-port 443 --allow-bind-port 8080 /usr/bin/myapp
+
+# A range plus a single port
+hajiz --net full --allow-connect-port 8000-8100 --allow-connect-port 443 /usr/bin/myapp
 ```
 
 ## Capability hardening
@@ -102,8 +106,14 @@ Pick one behavior:
 | `--strict-seccomp` | Strict | Minimal allowlist (`read`/`write`/`exit`/`sigreturn`). |
 | `--no-hardening` | Off | Disables the default hardening filter. |
 
-Hardening mode denies, among others: `unshare`, `setns`, `clone3`, `bpf`,
-`userfaultfd`, and the keyring syscalls (`add_key`, `request_key`, `keyctl`).
+These are mutually exclusive. When more than one is given, precedence is
+`--seccomp-whitelist` > `--strict-seccomp` > the default hardening filter — an
+explicitly requested mode always overrides the default-on hardening, so
+`--strict-seccomp` takes effect on its own without needing `--no-hardening`.
+
+Hardening mode denies: `unshare`, `setns`, `clone3`, `bpf`, `userfaultfd`, the
+keyring syscalls (`add_key`, `request_key`, `keyctl`), and the process-injection
+syscalls (`ptrace`, `process_vm_readv`, `process_vm_writev`).
 
 In allowlist mode, build the allowed set from named groups and individual
 syscalls (both repeatable):
@@ -203,8 +213,8 @@ sudo hajiz --audit --audit-output curl.toml /usr/bin/curl https://example.com
 
 ## Telemetry
 
-`hajiz` emits structured `SecurityEvent`s (policy applied, sandbox started,
-syscall/filesystem denied, resource usage, sandbox exited).
+`hajiz` emits structured `SecurityEvent`s: `sandbox_started`, `policy_applied`,
+`syscall_denied`, `resource_usage`, and `sandbox_exited`.
 
 - `--verbose` (`-v`) prints events to stderr.
 - `--log FICHIER` writes the events as JSON to a file.
@@ -212,6 +222,11 @@ syscall/filesystem denied, resource usage, sandbox exited).
 ```bash
 hajiz -v --log run.json --fs /usr:ro /usr/bin/myapp
 ```
+
+`syscall_denied` is best-effort: it is read from `/dev/kmsg` and requires root or
+`kernel.dmesg_restrict=0`, otherwise it is silently disabled. `filesystem_denied`
+is **not** emitted — Landlock denials are enforced by the kernel but do not appear
+in the audit log the way seccomp denials do, so they cannot currently be logged.
 
 ## Flag reference
 
@@ -223,8 +238,8 @@ hajiz -v --log run.json --fs /usr:ro /usr/bin/myapp
 | `--profile FICHIER` | Load policy from a TOML profile |
 | `--log FICHIER` | Write JSON telemetry to a file |
 | `--net MODE` | `none` (default), `loopback`, or `full` |
-| `--allow-connect-port PORT` | Allow outbound TCP port (repeatable) |
-| `--allow-bind-port PORT` | Allow bind TCP port (repeatable) |
+| `--allow-connect-port PORT\|START-END` | Allow outbound TCP port or range (repeatable) |
+| `--allow-bind-port PORT\|START-END` | Allow bind TCP port or range (repeatable) |
 | `--fs CHEMIN:MODE` | Landlock path rule, `ro` or `rw` (repeatable) |
 | `--keep-caps` | Skip capability drop (debugging) |
 | `--strict-seccomp` | Minimal seccomp allowlist |

@@ -30,9 +30,15 @@ struct CapData {
     inheritable: u32,
 }
 
-/// Returns true if the current process can load BPF programs (root or CAP_BPF).
+/// Returns true if the current process can load BPF programs.
+///
+/// Conservative root-only check: a process could also load BPF with CAP_BPF
+/// (kernel >= 5.8) without being root, but we don't probe the capability set
+/// here — a non-root CAP_BPF holder simply falls back to the strace backend,
+/// which is safe (just slower). Loosen this to a real CAP_BPF check if that
+/// fallback ever proves too coarse.
 pub fn can_use_bpf() -> bool {
-    // SAFETY: getuid is always safe.
+    // SAFETY: geteuid is always safe.
     unsafe { libc::geteuid() == 0 }
 }
 

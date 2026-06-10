@@ -3,16 +3,16 @@ use std::io::Write;
 use std::path::PathBuf;
 use super::event::SecurityEvent;
 
-/// Logger de télémétrie de sécurité
+/// Security telemetry logger
 pub struct TelemetryLogger {
-    /// Chemin vers le fichier de log (None = stderr)
+    /// Path to the log file (None = stderr)
     log_file: Option<PathBuf>,
-    /// Activer la sortie verbose
+    /// Enable verbose output
     verbose: bool,
 }
 
 impl TelemetryLogger {
-    /// Crée un logger qui écrit sur stderr
+    /// Creates a logger that writes to stderr
     pub fn new(verbose: bool) -> Self {
         Self {
             log_file: None,
@@ -20,7 +20,7 @@ impl TelemetryLogger {
         }
     }
 
-    /// Crée un logger qui écrit dans un fichier
+    /// Creates a logger that writes to a file
     pub fn with_file(path: PathBuf, verbose: bool) -> Self {
         Self {
             log_file: Some(path),
@@ -28,31 +28,31 @@ impl TelemetryLogger {
         }
     }
 
-    /// Enregistre un événement de sécurité
+    /// Records a security event
     pub fn log(&self, event: &SecurityEvent) {
         let json = event.to_json();
 
-        // Affichage verbose sur stderr
+        // Verbose output to stderr
         if self.verbose {
             eprintln!("[hajiz:telemetry] {}", json);
         }
 
-        // Écriture dans le fichier si configuré
+        // Write to the file if one is configured
         if let Some(path) = &self.log_file {
             match OpenOptions::new().create(true).append(true).open(path) {
                 Ok(mut file) => {
                     if let Err(e) = writeln!(file, "{}", json) {
-                        eprintln!("[hajiz:telemetry] erreur écriture log: {e}");
+                        eprintln!("[hajiz:telemetry] error writing log: {e}");
                     }
                 }
                 Err(e) => {
-                    eprintln!("[hajiz:telemetry] impossible d'ouvrir le fichier log: {e}");
+                    eprintln!("[hajiz:telemetry] unable to open log file: {e}");
                 }
             }
         }
     }
 
-    /// Calcule un hash simple de la politique d'isolation
+    /// Computes a simple hash of the isolation policy
     pub fn policy_hash(config: &crate::isolation::IsolationConfig) -> String {
         let policy_str = format!(
             "net:{},caps:{},seccomp_strict:{},whitelist:{},hardening:{},kill_on_deny:{},groups:{:?},syscalls:{:?},fs:{:?},connect_ports:{:?},bind_ports:{:?}",
@@ -69,7 +69,7 @@ impl TelemetryLogger {
             config.allow_bind_ports,
         );
 
-        // Hash djb2 simple
+        // Simple djb2 hash
         let mut hash: u64 = 5381;
         for byte in policy_str.bytes() {
             hash = hash.wrapping_mul(33).wrapping_add(byte as u64);

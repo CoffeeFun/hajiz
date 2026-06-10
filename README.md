@@ -24,7 +24,9 @@ and writes a policy for you.
   effective/permitted/inheritable cleared, and the full bounding set dropped.
 - **Landlock filesystem rules.** Per-path `ro`/`rw` allowlists, plus TCP
   connect/bind port allowlists on kernel ≥ 6.7.
-- **Three seccomp modes.** Hardening-deny (default), allowlist, and strict.
+- **Three seccomp modes.** Hardening-deny (default; blocks `unshare`, `setns`,
+  `clone3`, `bpf`, `userfaultfd`, the keyring calls, and `ptrace`/`process_vm_*`),
+  allowlist, and strict.
 - **Three network tiers.** `none`, `loopback`, `full` (see below).
 - **Resource limits.** Memory, CPU, and PID caps via cgroups v2.
 - **Audit mode.** Observe a binary's real syscalls and auto-generate a TOML
@@ -66,8 +68,9 @@ sudo install -m 755 target/release/hajiz /usr/local/bin/hajiz
 On Ubuntu 23.10 and later (including 24.04 LTS) the sysctl
 `kernel.apparmor_restrict_unprivileged_userns` is enabled by default, which
 blocks `unshare(CLONE_NEWUSER)` for unprivileged binaries without an explicit
-AppArmor profile — `hajiz` would fail with `EPERM` on startup. Install the
-bundled profile:
+AppArmor profile — `hajiz` would fail with `EPERM` on startup (it prints a hint
+pointing here when it detects this). Install the bundled profile
+([packaging/apparmor/hajiz](packaging/apparmor/hajiz)):
 
 ```bash
 sudo cp packaging/apparmor/hajiz /etc/apparmor.d/hajiz
@@ -92,6 +95,9 @@ hajiz --net loopback /usr/bin/python3 -m http.server 8000
 # Full network restricted to specific ports (kernel 6.7+)
 hajiz --net full --allow-connect-port 443 --allow-connect-port 80 \
   /usr/bin/curl https://example.com
+
+# Port ranges are accepted too (START-END, inclusive)
+hajiz --net full --allow-connect-port 8000-8100 /usr/bin/myapp
 
 # Resource caps
 hajiz --max-mem 512M --max-cpu 50 --max-pids 64 /usr/bin/myapp
@@ -164,6 +170,27 @@ allow_syscalls = []
   through `exec()`.
 - **Out of scope:** side channels (Spectre/timing), kernel exploits, hardware
   attacks, and a compromised `hajiz` binary itself.
+
+## Known limitations
+
+- **Ubuntu 23.10+ needs the AppArmor profile.** Unprivileged user namespaces are
+  blocked by default; without the [bundled profile](packaging/apparmor/hajiz)
+  startup fails with `EPERM`. `hajiz` detects this and prints a hint.
+- **Kernel version gates features.** Landlock filesystem rules need kernel ≥ 5.13
+  and Landlock TCP-port rules need ≥ 6.7. On older kernels those rules are
+  skipped with a warning rather than failing — verify with `hajiz --kernel-info`.
+- **`full` network mode shares the host netns.** Without kernel ≥ 6.7 port
+  allowlists it grants unrestricted network access. Use `none`/`loopback` for
+  hard isolation.
+- **Logging coverage is not complete.** `sandbox_started`, `policy_applied`,
+  `sandbox_exited`, `resource_usage`, and `syscall_denied` are emitted.
+  `syscall_denied` is best-effort: it requires a readable `/dev/kmsg`
+  (root or `kernel.dmesg_restrict=0`) and is silently disabled otherwise.
+  **`filesystem_denied` is not emitted** — Landlock access denials do not surface
+  in the kernel audit log the way seccomp denials do, so filesystem violations
+  are enforced but not currently logged.
+- **Resource limits require cgroups v2.** `--max-mem`/`--max-cpu`/`--max-pids`
+  warn and continue if a writable cgroups v2 hierarchy is unavailable.
 
 ## Testing
 

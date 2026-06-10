@@ -58,7 +58,7 @@ pub mod inner {
             }
             ForkResult::Parent { child: child_pid } => {
                 drop(child_sock);
-                parent_main(parent_sock, child_pid, binary)
+                parent_main(parent_sock, child_pid)
             }
         }
     }
@@ -139,11 +139,7 @@ pub mod inner {
     }
 
     // ─── Parent (broker) ─────────────────────────────────────────────────────
-    fn parent_main(
-        sock: OwnedFd,
-        child_pid: Pid,
-        _binary: &str,
-    ) -> Result<AuditReport, HajizError> {
+    fn parent_main(sock: OwnedFd, child_pid: Pid) -> Result<AuditReport, HajizError> {
         // Load BPF and attach. This is the privileged window.
         let mut bpf = Ebpf::load(BPF_OBJ)
             .map_err(|e| HajizError::Isolation(format!("BPF load: {e}")))?;
@@ -224,7 +220,6 @@ pub mod inner {
         use crate::error::HajizError;
 
         // Subset of `enum bpf_cmd` from <linux/bpf.h> we use.
-        const BPF_MAP_LOOKUP_ELEM: i32 = 1;
         const BPF_MAP_UPDATE_ELEM: i32 = 2;
         const BPF_MAP_GET_NEXT_KEY: i32 = 4;
 
@@ -297,29 +292,6 @@ pub mod inner {
                 }
             } else {
                 Ok(Some(next))
-            }
-        }
-
-        // Currently unused but kept for completeness (could be useful if we
-        // want call counts in the report).
-        #[allow(dead_code)]
-        pub fn map_lookup_u32_u64(map_fd: i32, key: u32) -> Result<u64, HajizError> {
-            let mut value: u64 = 0;
-            let attr = MapAttr {
-                map_fd: map_fd as u32,
-                _pad: 0,
-                key: &key as *const u32 as u64,
-                value_or_next_key: &mut value as *mut u64 as u64,
-                flags: 0,
-            };
-            let r = unsafe { bpf(BPF_MAP_LOOKUP_ELEM, &attr) };
-            if r < 0 {
-                Err(HajizError::Isolation(format!(
-                    "bpf(MAP_LOOKUP_ELEM): {}",
-                    std::io::Error::last_os_error()
-                )))
-            } else {
-                Ok(value)
             }
         }
     }
