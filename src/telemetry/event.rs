@@ -22,6 +22,15 @@ pub enum SecurityEvent {
         path: String,
         timestamp: SystemTime,
     },
+    /// Network access denied (predicted Landlock TCP-port miss)
+    NetworkDenied {
+        pid: u32,
+        /// "connect" or "bind"
+        operation: String,
+        address: String,
+        port: u16,
+        timestamp: SystemTime,
+    },
     /// Sandbox finished
     SandboxExited {
         pid: u32,
@@ -56,6 +65,7 @@ impl SecurityEvent {
             Self::SandboxStarted { timestamp, .. } => *timestamp,
             Self::SyscallDenied { timestamp, .. } => *timestamp,
             Self::FilesystemDenied { timestamp, .. } => *timestamp,
+            Self::NetworkDenied { timestamp, .. } => *timestamp,
             Self::SandboxExited { timestamp, .. } => *timestamp,
             Self::PolicyApplied { timestamp, .. } => *timestamp,
             Self::ResourceUsage { timestamp, .. } => *timestamp,
@@ -68,6 +78,7 @@ impl SecurityEvent {
             Self::SandboxStarted { .. } => "sandbox_started",
             Self::SyscallDenied { .. } => "syscall_denied",
             Self::FilesystemDenied { .. } => "filesystem_denied",
+            Self::NetworkDenied { .. } => "network_denied",
             Self::SandboxExited { .. } => "sandbox_exited",
             Self::PolicyApplied { .. } => "policy_applied",
             Self::ResourceUsage { .. } => "resource_usage",
@@ -100,6 +111,11 @@ impl SecurityEvent {
             Self::FilesystemDenied { pid, path, .. } => {
                 format!(
                     r#"{{"event":"filesystem_denied","pid":{pid},"path":"{path}","timestamp":{ts}}}"#
+                )
+            }
+            Self::NetworkDenied { pid, operation, address, port, .. } => {
+                format!(
+                    r#"{{"event":"network_denied","pid":{pid},"operation":"{operation}","address":"{address}","port":{port},"timestamp":{ts}}}"#
                 )
             }
             Self::SandboxExited { pid, exit_code, signal, .. } => {

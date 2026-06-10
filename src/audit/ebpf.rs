@@ -239,12 +239,14 @@ pub mod inner {
         }
 
         unsafe fn bpf(cmd: i32, attr: &MapAttr) -> i64 {
-            libc::syscall(
-                libc::SYS_bpf,
-                cmd,
-                attr as *const MapAttr,
-                std::mem::size_of::<MapAttr>() as u32,
-            )
+            unsafe {
+                libc::syscall(
+                    libc::SYS_bpf,
+                    cmd,
+                    attr as *const MapAttr,
+                    std::mem::size_of::<MapAttr>() as u32,
+                )
+            }
         }
 
         pub fn map_update_u32_u64(map_fd: i32, key: u32, value: u64) -> Result<(), HajizError> {

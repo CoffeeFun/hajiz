@@ -1,5 +1,6 @@
 
 use std::collections::BTreeSet;
+use std::os::fd::RawFd;
 
 use libseccomp::{
     ScmpAction,
@@ -10,7 +11,10 @@ use nix::libc;
 
 use crate::{error::HajizError, isolation::IsolationConfig};
 
-pub fn apply_seccomp(config: &IsolationConfig) -> Result<(), HajizError> {
+/// Apply the configured seccomp mode. Returns the seccomp user-notification
+/// listener fd when the hardening filter was loaded with
+/// SECCOMP_RET_USER_NOTIF actions (`config.seccomp_notify`), otherwise None.
+pub fn apply_seccomp(config: &IsolationConfig) -> Result<Option<RawFd>, HajizError> {
     // Precedence: an explicitly requested mode (whitelist or strict) overrides
     // the default-on hardening filter. The hardening filter is the fallback when
     // the user asked for nothing more specific. Checking strict before hardening
@@ -18,7 +22,7 @@ pub fn apply_seccomp(config: &IsolationConfig) -> Result<(), HajizError> {
     // `--no-hardening` (the two explicit modes are stricter than hardening anyway).
     if config.use_seccomp_whitelist {
         apply_whitelist_filter(config)?;
-        return Ok(());
+        return Ok(None);
     }
 
     if config.strict_seccomp {
@@ -29,24 +33,31 @@ pub fn apply_seccomp(config: &IsolationConfig) -> Result<(), HajizError> {
                 "failed to enable strict seccomp mode: {err}"
             )));
         }
-        return Ok(());
+        return Ok(None);
     }
 
     if config.enable_hardening_filter {
-        apply_hardening_filter(config.kill_on_deny)?;
-        return Ok(());
+        return apply_hardening_filter(config);
     }
 
-    Ok(())
+    Ok(None)
 }
 
-fn apply_hardening_filter(kill_on_deny: bool) -> Result<(), HajizError> {
+fn apply_hardening_filter(config: &IsolationConfig) -> Result<Option<RawFd>, HajizError> {
     // Default-allow, then deny high-risk primitives often used to expand privilege
     // or escape sandboxes when user namespaces are available.
     let mut filter = ScmpFilterContext::new_filter(ScmpAction::Allow)
         .map_err(|e| HajizError::Isolation(format!("failed to create hardening seccomp filter: {e}")))?;
 
-    let deny_action = deny_action(kill_on_deny);
+    // With kill_on_deny the kill must stay in-kernel (a user-notification
+    // supervisor cannot deliver SIGSYS), so notify only applies to EPERM mode.
+    let use_notify = config.seccomp_notify && !config.kill_on_deny;
+    let deny_action = if use_notify {
+        ScmpAction::Notify
+    } else {
+        deny_action(config.kill_on_deny)
+    };
+
     for syscall_name in hardened_denied_syscalls() {
         let syscall = ScmpSyscall::from_name(syscall_name)
             .map_err(|_| HajizError::Config(format!("unknown hardening syscall name: {syscall_name}")))?;
@@ -57,14 +68,88 @@ fn apply_hardening_filter(kill_on_deny: bool) -> Result<(), HajizError> {
             )))?;
     }
 
+    // Filesystem telemetry: route path-taking syscalls through the parent so
+    // it can predict Landlock denials and emit FilesystemDenied. The parent
+    // always answers CONTINUE — Landlock stays the enforcement point.
+    if use_notify && config.seccomp_fs_notify && !config.filesystem_rules.is_empty() {
+        add_notify_rules(&mut filter, fs_notified_syscalls(), "fs")?;
+    }
+
+    // Network telemetry: same contract for connect/bind against the Landlock
+    // TCP-port allowlist — predict, log, CONTINUE; Landlock decides.
+    if use_notify
+        && config.seccomp_net_notify
+        && (config.restrict_tcp_connect() || config.restrict_tcp_bind())
+    {
+        add_notify_rules(&mut filter, net_notified_syscalls(), "net")?;
+    }
+
     // Emit kernel audit messages on denied syscalls so the parent can read
-    // them via /dev/kmsg and surface SyscallDenied telemetry events.
+    // them via /dev/kmsg and surface SyscallDenied telemetry events. Only the
+    // fallback path when user notification is unavailable (kernel < 5.0).
     let _ = filter.set_ctl_log(true);
 
     filter
         .load()
         .map_err(|e| HajizError::Isolation(format!("failed to load hardening seccomp filter: {e}")))?;
 
+    if use_notify {
+        let fd = filter
+            .get_notify_fd()
+            .map_err(|e| HajizError::Isolation(format!("failed to get seccomp notify fd: {e}")))?;
+        // The listener must not leak into the target: a malicious target
+        // holding it could answer its own notifications from another thread
+        // and lift the denials. CLOEXEC closes it at exec; the parent's copy
+        // (sent via SCM_RIGHTS) is a separate fd-table entry and unaffected.
+        unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) };
+        return Ok(Some(fd));
+    }
+
+    Ok(None)
+}
+
+/// Path-taking syscalls intercepted for FilesystemDenied telemetry when
+/// `seccomp_fs_notify` is on. Kept small: the open family covers the vast
+/// majority of accesses; the rest are the common write-side operations.
+pub fn fs_notified_syscalls() -> &'static [&'static str] {
+    &[
+        "open",
+        "openat",
+        "creat",
+        "truncate",
+        "mkdir",
+        "mkdirat",
+        "rmdir",
+        "unlink",
+        "unlinkat",
+        "rename",
+        "renameat",
+        "renameat2",
+    ]
+}
+
+/// Socket syscalls intercepted for NetworkDenied telemetry when
+/// `seccomp_net_notify` is on.
+pub fn net_notified_syscalls() -> &'static [&'static str] {
+    &["connect", "bind"]
+}
+
+/// Add `ScmpAction::Notify` rules for a set of syscalls. Names that don't
+/// resolve on the current architecture are skipped rather than failing.
+fn add_notify_rules(
+    filter: &mut ScmpFilterContext,
+    syscalls: &[&str],
+    kind: &str,
+) -> Result<(), HajizError> {
+    for syscall_name in syscalls {
+        if let Ok(syscall) = ScmpSyscall::from_name(syscall_name) {
+            filter
+                .add_rule(ScmpAction::Notify, syscall)
+                .map_err(|e| HajizError::Isolation(format!(
+                    "failed to add {kind}-notify seccomp rule for {syscall_name}: {e}"
+                )))?;
+        }
+    }
     Ok(())
 }
 

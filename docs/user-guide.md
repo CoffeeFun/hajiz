@@ -214,19 +214,38 @@ sudo hajiz --audit --audit-output curl.toml /usr/bin/curl https://example.com
 ## Telemetry
 
 `hajiz` emits structured `SecurityEvent`s: `sandbox_started`, `policy_applied`,
-`syscall_denied`, `resource_usage`, and `sandbox_exited`.
+`syscall_denied`, `filesystem_denied`, `network_denied`, `resource_usage`, and
+`sandbox_exited`.
 
 - `--verbose` (`-v`) prints events to stderr.
-- `--log FICHIER` writes the events as JSON to a file.
+- `--log FILE` writes the events as JSON to a file.
 
 ```bash
 hajiz -v --log run.json --fs /usr:ro /usr/bin/myapp
 ```
 
-`syscall_denied` is best-effort: it is read from `/dev/kmsg` and requires root or
-`kernel.dmesg_restrict=0`, otherwise it is silently disabled. `filesystem_denied`
-is **not** emitted — Landlock denials are enforced by the kernel but do not appear
-in the audit log the way seccomp denials do, so they cannot currently be logged.
+On kernel ≥ 5.0, `syscall_denied` events are delivered through **seccomp user
+notification**: denied syscalls are routed to a supervisor thread in the hajiz
+parent, which logs the event and answers `EPERM`. This needs no privileges and
+works regardless of `kernel.dmesg_restrict`.
+
+On kernel ≥ 5.5, when Landlock rules are configured and `--log`/`--verbose` is
+active, filesystem syscalls (the `open`/`unlink`/`rename`/`mkdir` families) are
+also routed through the supervisor: it reads the accessed path, predicts the
+Landlock decision from the profile rules, emits `filesystem_denied` on a miss,
+and tells the kernel to continue — Landlock remains the enforcement point, the
+notification is telemetry only.
+
+`network_denied` works the same way for `connect`/`bind` when a TCP-port
+allowlist (`--allow-connect-port`/`--allow-bind-port`) is active: the supervisor
+reads the destination from the sockaddr, predicts the Landlock TCP-port
+decision, logs a miss, and answers continue — Landlock makes the final call.
+Like the filesystem path, this is a prediction for telemetry, not the
+enforcement boundary.
+
+Fallbacks: on kernels older than 5.0, or with `--kill-on-deny` (the kill action
+stays in-kernel), `syscall_denied` falls back to parsing `/dev/kmsg` audit
+records, which requires root or `kernel.dmesg_restrict=0`.
 
 ## Flag reference
 

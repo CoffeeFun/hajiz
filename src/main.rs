@@ -6,7 +6,7 @@ use hajiz::{
     kernel::KernelCapabilities,
     profile::load_profile,
     runtime::process::{SandboxProcess, SpawnOptions},
-    telemetry::{spawn_monitors, SecurityEvent, TelemetryLogger},
+    telemetry::{spawn_monitors, NotifyTelemetry, SecurityEvent, TelemetryLogger},
 };
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -68,7 +68,9 @@ struct Cli {
     verbose: bool,
     #[arg(required = false)]
     binary: Option<String>,
-    #[arg(trailing_var_arg = true)]
+    /// Arguments passed through to the sandboxed binary — never parsed as
+    /// hajiz options, even when they look like flags (e.g. `unshare --pid`).
+    #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
     args: Vec<String>,
 }
 
@@ -249,6 +251,10 @@ fn main() {
         allow_connect_ports: cli_connect_ports.clone(),
         allow_bind_ports: cli_bind_ports.clone(),
         kill_on_deny: cli.kill_on_deny,
+        seccomp_notify: false,     // decided below, once the policy is final
+        seccomp_fs_notify: false,
+        seccomp_net_notify: false,
+        notify_socket_fd: None,
     };
 
     let profile_name = if let Some(profile_path) = &cli.profile {
@@ -335,6 +341,31 @@ fn main() {
     let hardening_effective = config.enable_hardening_filter
         && !config.use_seccomp_whitelist
         && !config.strict_seccomp;
+
+    // Denial telemetry transport. Preferred: seccomp user notification — the
+    // parent services denials directly, no /dev/kmsg needed. Only available
+    // for the hardening filter in EPERM mode (kill-on-deny stays in-kernel,
+    // whitelist mode would have to notify on its own fd handoff syscalls).
+    // Filesystem telemetry additionally needs CONTINUE responses (>= 5.5),
+    // Landlock rules to predict against, and a telemetry consumer.
+    let kernel_caps = KernelCapabilities::detect();
+    config.seccomp_notify = hardening_effective
+        && !config.kill_on_deny
+        && kernel_caps.as_ref().map(|k| k.seccomp_notify).unwrap_or(false);
+    let notify_continue = kernel_caps.as_ref().map(|k| k.seccomp_notify_continue).unwrap_or(false);
+    let telemetry_consumer = cli.log.is_some() || cli.verbose;
+    config.seccomp_fs_notify = config.seccomp_notify
+        && notify_continue
+        && !config.filesystem_rules.is_empty()
+        && telemetry_consumer;
+    // Network telemetry mirrors the filesystem path: predict + CONTINUE, with
+    // Landlock the final decision. Only meaningful when a TCP-port allowlist
+    // is active (otherwise there's no Landlock network restriction to predict).
+    config.seccomp_net_notify = config.seccomp_notify
+        && notify_continue
+        && (config.restrict_tcp_connect() || config.restrict_tcp_bind())
+        && telemetry_consumer;
+
     let blocked_syscalls: Vec<String> = if hardening_effective {
         hardened_denied_syscalls().iter().map(|s| s.to_string()).collect()
     } else {
@@ -348,6 +379,9 @@ fn main() {
         feats.push("seccomp");
     }
     if config.kill_on_deny { feats.push("kill-on-deny"); }
+    if config.seccomp_notify { feats.push("seccomp-notify"); }
+    if config.seccomp_fs_notify { feats.push("fs-telemetry"); }
+    if config.seccomp_net_notify { feats.push("net-telemetry"); }
     if config.restrict_tcp_connect() || config.restrict_tcp_bind() {
         feats.push("landlock-net");
     }
@@ -371,27 +405,47 @@ fn main() {
     let pid = std::process::id();
     let cgroup_path = if has_limits { Some(cgroup_path_for(pid)) } else { None };
 
+    // The supervisor predicts Landlock decisions from the same rules the
+    // child enforces with.
+    let fs_rules_for_telemetry = if config.seccomp_fs_notify {
+        config.filesystem_rules.clone()
+    } else {
+        Vec::new()
+    };
+    let (connect_ports_for_telemetry, bind_ports_for_telemetry) = if config.seccomp_net_notify {
+        (config.allow_connect_ports.clone(), config.allow_bind_ports.clone())
+    } else {
+        (Vec::new(), Vec::new())
+    };
+
     let result = SandboxProcess::spawn(SpawnOptions {
         binary,
         args: cli.args,
         verbose: cli.verbose,
         isolation: config,
     })
-    .and_then(|sandbox| {
+    .and_then(|mut sandbox| {
         let child_pid = sandbox.pid;
         // Move the sandboxed child into its cgroup so the limits apply to it.
         // hajiz itself stays out, which keeps cleanup_cgroup's rmdir able to
         // succeed once the child exits.
-        if has_limits {
-            if let Err(e) = add_to_cgroup(child_pid) {
-                eprintln!("[hajiz] cgroups warning: {e}");
-            }
+        if has_limits
+            && let Err(e) = add_to_cgroup(child_pid)
+        {
+            eprintln!("[hajiz] cgroups warning: {e}");
         }
+        let notify = sandbox.take_notify_fd().map(|fd| NotifyTelemetry {
+            fd,
+            fs_rules: fs_rules_for_telemetry,
+            connect_ports: connect_ports_for_telemetry,
+            bind_ports: bind_ports_for_telemetry,
+        });
         let monitors = spawn_monitors(
             Arc::clone(&logger),
             child_pid,
             cgroup_path.clone(),
             Duration::from_secs(1),
+            notify,
         );
         let outcome = sandbox.monitor();
         monitors.stop();

@@ -111,10 +111,10 @@ fn parse_line(raw: &str, report: &mut AuditReport) {
 }
 
 fn strip_pid_prefix(line: &str) -> &str {
-    if let Some(rest) = line.strip_prefix('[') {
-        if let Some(idx) = rest.find("] ") {
-            return &rest[idx + 2..];
-        }
+    if let Some(rest) = line.strip_prefix('[')
+        && let Some(idx) = rest.find("] ")
+    {
+        return &rest[idx + 2..];
     }
     line
 }

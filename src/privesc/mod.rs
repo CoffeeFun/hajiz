@@ -137,6 +137,16 @@ pub fn send_fds(sock: BorrowedFd<'_>, fds: &[RawFd]) -> Result<(), HajizError> {
     Ok(())
 }
 
+/// Send a one-byte marker with no file descriptors attached. Used to unblock
+/// a peer that is waiting on `recv_fds` when there is nothing to deliver.
+pub fn send_marker(sock: BorrowedFd<'_>) -> Result<(), HajizError> {
+    let payload = [b'N'];
+    let iov = [std::io::IoSlice::new(&payload)];
+    sendmsg::<()>(sock.as_raw_fd(), &iov, &[], MsgFlags::empty(), None)
+        .map_err(|e| HajizError::Isolation(format!("sendmsg(marker): {e}")))?;
+    Ok(())
+}
+
 /// Receive `n` file descriptors sent via SCM_RIGHTS.
 pub fn recv_fds(sock: BorrowedFd<'_>, n: usize) -> Result<Vec<OwnedFd>, HajizError> {
     use std::os::fd::FromRawFd;

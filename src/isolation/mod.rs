@@ -2,6 +2,8 @@ pub mod capabilities;
 pub mod filesystem;
 pub mod namespaces;
 pub mod seccomp;
+use std::os::fd::{BorrowedFd, RawFd};
+
 use crate::error::HajizError;
 #[derive(Debug, Clone)]
 pub struct FilesystemRule {
@@ -64,6 +66,23 @@ pub struct IsolationConfig {
     /// (SECCOMP_RET_KILL_PROCESS) instead of returning EPERM. The kernel
     /// still emits a SECCOMP audit record so the parent can log it.
     pub kill_on_deny: bool,
+    /// Use SECCOMP_RET_USER_NOTIF for hardening-filter denials so the parent
+    /// can log SyscallDenied directly, without depending on /dev/kmsg.
+    /// Requires kernel >= 5.0; has no effect with kill_on_deny (the kill
+    /// action stays in-kernel). Set by the parent before spawn.
+    pub seccomp_notify: bool,
+    /// Also notify on filesystem syscalls so the parent can emit
+    /// FilesystemDenied telemetry (the parent answers CONTINUE and Landlock
+    /// remains the enforcement point). Requires kernel >= 5.5.
+    pub seccomp_fs_notify: bool,
+    /// Also notify on connect/bind so the parent can emit NetworkDenied
+    /// telemetry against the Landlock TCP-port allowlist. Same contract as
+    /// the filesystem path: parent answers CONTINUE, Landlock decides.
+    /// Requires kernel >= 5.5.
+    pub seccomp_net_notify: bool,
+    /// Child end of the socketpair over which the seccomp notify fd is sent
+    /// back to the parent via SCM_RIGHTS. Set by the runtime, not by users.
+    pub notify_socket_fd: Option<RawFd>,
 }
 
 impl IsolationConfig {
@@ -90,6 +109,10 @@ impl Default for IsolationConfig {
             allow_connect_ports: Vec::new(),
             allow_bind_ports: Vec::new(),
             kill_on_deny: false,
+            seccomp_notify: false,
+            seccomp_fs_notify: false,
+            seccomp_net_notify: false,
+            notify_socket_fd: None,
         }
     }
 }
@@ -108,7 +131,22 @@ pub fn apply_in_child(config: &IsolationConfig) -> Result<(), HajizError> {
     let skip_landlock = kernel_caps.as_ref().map(|k| !k.landlock).unwrap_or(false);
     filesystem::setup_landlock(config, skip_landlock)?;
 
-    seccomp::apply_seccomp(config)?;
+    let notify_fd = seccomp::apply_seccomp(config)?;
+
+    // Hand the seccomp notify fd back to the parent. The parent always waits
+    // for one message when it set up the socket, so send a plain marker when
+    // no listener fd was created (e.g. the filter mode changed underneath).
+    // Failures here only degrade telemetry — never abort the sandbox.
+    if let Some(sock_raw) = config.notify_socket_fd {
+        // SAFETY: the parent keeps this fd open across fork; we only borrow it
+        // here in the pre-exec child, before exec closes it (CLOEXEC).
+        let sock = unsafe { BorrowedFd::borrow_raw(sock_raw) };
+        let _ = match notify_fd {
+            Some(fd) => crate::privesc::send_fds(sock, &[fd]),
+            None => crate::privesc::send_marker(sock),
+        };
+    }
+
     Ok(())
 }
 #[cfg(test)]

@@ -1,6 +1,7 @@
 use std::{
     ffi::c_int,
     path::PathBuf,
+    os::fd::{AsFd, AsRawFd, OwnedFd},
     os::unix::process::CommandExt,
     process::{Child, Command, ExitStatus, Stdio},
     sync::atomic::{AtomicBool, Ordering},
@@ -9,6 +10,7 @@ use std::{
 };
 
 use nix::{
+    libc,
     sys::signal::{self, Signal},
     unistd::Pid,
 };
@@ -19,6 +21,7 @@ use crate::{
         self,
         IsolationConfig,
     },
+    privesc,
 };
 
 // ---------------------------------------------------------------------------
@@ -40,6 +43,9 @@ pub struct SandboxProcess {
     child: Child,
     /// OS process ID.
     pub pid: u32,
+    /// Seccomp user-notification listener fd received from the child
+    /// (present when the isolation config requested seccomp_notify).
+    notify_fd: Option<OwnedFd>,
 }
 
 #[derive(Debug, Clone)]
@@ -65,7 +71,28 @@ impl SandboxProcess {
             eprintln!("[hajiz] spawning: {}", options.binary.display());
         }
 
-        let isolation_config = options.isolation;
+        let mut isolation_config = options.isolation;
+
+        // Socketpair over which the child sends back the seccomp notify fd
+        // (SCM_RIGHTS). Created before fork so both sides inherit it; the
+        // child end is closed at exec (CLOEXEC), the parent reads after spawn.
+        let notify_sockets = if isolation_config.seccomp_notify {
+            match privesc::socketpair_stream() {
+                Ok(pair) => Some(pair),
+                Err(e) => {
+                    eprintln!("[hajiz] seccomp notify disabled (socketpair failed: {e})");
+                    isolation_config.seccomp_notify = false;
+                    isolation_config.seccomp_fs_notify = false;
+                    None
+                }
+            }
+        } else {
+            None
+        };
+        if let Some((_, child_end)) = &notify_sockets {
+            isolation_config.notify_socket_fd = Some(child_end.as_raw_fd());
+        }
+
         let mut command = Command::new(&options.binary);
         command
             .args(&options.args)
@@ -82,11 +109,24 @@ impl SandboxProcess {
 
         let child = command.spawn()?;
 
+        // The child sent the fd during pre_exec, strictly before exec, and
+        // spawn() only returns once exec succeeded — so the message is already
+        // queued and this does not block. The timeout is pure defensiveness.
+        let notify_fd = notify_sockets.and_then(|(parent_end, child_end)| {
+            drop(child_end);
+            recv_notify_fd(&parent_end)
+        });
+
         let pid = child.id();
 
         eprintln!("[hajiz] sandboxed process started (PID {pid})");
 
-        Ok(Self { child, pid })
+        Ok(Self { child, pid, notify_fd })
+    }
+
+    /// Take the seccomp user-notification listener fd, if one was received.
+    pub fn take_notify_fd(&mut self) -> Option<OwnedFd> {
+        self.notify_fd.take()
     }
 
     // -----------------------------------------------------------------------
@@ -156,6 +196,25 @@ impl SandboxProcess {
     /// Best-effort cleanup hook.
     fn cleanup(&mut self) {
         eprintln!("[hajiz] cleanup complete for PID {}", self.pid);
+    }
+}
+
+/// Wait briefly for the child's SCM_RIGHTS message and extract the notify fd.
+/// A marker message without fds (or a timeout) means notify is not active.
+fn recv_notify_fd(sock: &OwnedFd) -> Option<OwnedFd> {
+    let mut pfd = libc::pollfd {
+        fd: sock.as_raw_fd(),
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    let n = unsafe { libc::poll(&mut pfd, 1, 3000) };
+    if n <= 0 || pfd.revents & libc::POLLIN == 0 {
+        eprintln!("[hajiz] warning: no seccomp notify fd received — SyscallDenied telemetry degraded");
+        return None;
+    }
+    match privesc::recv_fds(sock.as_fd(), 1) {
+        Ok(mut fds) => Some(fds.remove(0)),
+        Err(_) => None,
     }
 }
 

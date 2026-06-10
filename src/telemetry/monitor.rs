@@ -1,5 +1,6 @@
 use std::fs;
 use std::io::{ErrorKind, Read};
+use std::os::fd::OwnedFd;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -9,8 +10,20 @@ use std::time::{Duration, SystemTime};
 use libseccomp::{ScmpArch, ScmpSyscall};
 use nix::libc;
 
+use crate::isolation::FilesystemRule;
+
 use super::event::SecurityEvent;
 use super::logger::TelemetryLogger;
+use super::notify::{spawn_notify_supervisor, PredictRules};
+
+/// Inputs for the seccomp user-notification supervisor: the listener fd
+/// received from the child and the Landlock rules used to predict denials.
+pub struct NotifyTelemetry {
+    pub fd: OwnedFd,
+    pub fs_rules: Vec<FilesystemRule>,
+    pub connect_ports: Vec<u16>,
+    pub bind_ports: Vec<u16>,
+}
 
 /// Handle for the background monitor threads. Drop or call `stop()` to
 /// shut them down cleanly.
@@ -31,9 +44,13 @@ impl MonitorHandle {
 /// Spawn background monitoring threads that emit telemetry events while
 /// the sandboxed child runs.
 ///
-/// - kmsg reader: parses `audit: type=1326` (SECCOMP) records and emits
-///   `SyscallDenied` events for the child PID. Best-effort: silently skipped
-///   if `/dev/kmsg` is not readable (kernel.dmesg_restrict=1, no CAP_SYSLOG).
+/// - notify supervisor (preferred, kernel >= 5.0): services the seccomp
+///   user-notification fd, emitting `SyscallDenied` for hardened denials and
+///   `FilesystemDenied` for predicted Landlock misses. No privileges needed.
+/// - kmsg reader (fallback when `notify` is None): parses `audit: type=1326`
+///   (SECCOMP) records and emits `SyscallDenied` events for the child PID.
+///   Best-effort: silently skipped if `/dev/kmsg` is not readable
+///   (kernel.dmesg_restrict=1, no CAP_SYSLOG).
 /// - cgroup sampler: reads `memory.current`, `pids.current`, `cpu.stat`
 ///   from the hajiz cgroup every `sample_interval` and emits `ResourceUsage`.
 ///   Skipped if the cgroup directory does not exist.
@@ -42,24 +59,36 @@ pub fn spawn_monitors(
     child_pid: u32,
     cgroup_path: Option<PathBuf>,
     sample_interval: Duration,
+    notify: Option<NotifyTelemetry>,
 ) -> MonitorHandle {
     let stop = Arc::new(AtomicBool::new(false));
     let mut threads = Vec::new();
 
-    if let Some(t) = spawn_kmsg_reader(Arc::clone(&logger), child_pid, Arc::clone(&stop)) {
+    if let Some(notify) = notify {
+        threads.push(spawn_notify_supervisor(
+            Arc::clone(&logger),
+            notify.fd,
+            PredictRules {
+                fs_rules: notify.fs_rules,
+                connect_ports: notify.connect_ports,
+                bind_ports: notify.bind_ports,
+            },
+            Arc::clone(&stop),
+        ));
+    } else if let Some(t) = spawn_kmsg_reader(Arc::clone(&logger), child_pid, Arc::clone(&stop)) {
         threads.push(t);
     }
 
-    if let Some(path) = cgroup_path {
-        if let Some(t) = spawn_cgroup_sampler(
+    if let Some(path) = cgroup_path
+        && let Some(t) = spawn_cgroup_sampler(
             Arc::clone(&logger),
             child_pid,
             path,
             sample_interval,
             Arc::clone(&stop),
-        ) {
-            threads.push(t);
-        }
+        )
+    {
+        threads.push(t);
     }
 
     MonitorHandle { stop, threads }
@@ -95,10 +124,10 @@ fn spawn_kmsg_reader(
                     thread::sleep(Duration::from_millis(50));
                 }
                 Ok(n) => {
-                    if let Ok(s) = std::str::from_utf8(&buf[..n]) {
-                        if let Some(event) = parse_seccomp_audit(s, child_pid) {
-                            logger.log(&event);
-                        }
+                    if let Ok(s) = std::str::from_utf8(&buf[..n])
+                        && let Some(event) = parse_seccomp_audit(s, child_pid)
+                    {
+                        logger.log(&event);
                     }
                 }
                 Err(e) if e.kind() == ErrorKind::WouldBlock => {

@@ -182,13 +182,20 @@ allow_syscalls = []
 - **`full` network mode shares the host netns.** Without kernel ≥ 6.7 port
   allowlists it grants unrestricted network access. Use `none`/`loopback` for
   hard isolation.
-- **Logging coverage is not complete.** `sandbox_started`, `policy_applied`,
-  `sandbox_exited`, `resource_usage`, and `syscall_denied` are emitted.
-  `syscall_denied` is best-effort: it requires a readable `/dev/kmsg`
-  (root or `kernel.dmesg_restrict=0`) and is silently disabled otherwise.
-  **`filesystem_denied` is not emitted** — Landlock access denials do not surface
-  in the kernel audit log the way seccomp denials do, so filesystem violations
-  are enforced but not currently logged.
+- **Denial telemetry has kernel gates.** On kernel ≥ 5.0, `syscall_denied`
+  events are delivered through seccomp user notification — no privileges or
+  `/dev/kmsg` access needed. `filesystem_denied` events (predicted Landlock
+  misses) additionally need kernel ≥ 5.5 and are only collected when `--log`
+  or `--verbose` is active, since each intercepted filesystem syscall costs a
+  round-trip to the supervisor. On older kernels both fall back to best-effort
+  `/dev/kmsg` parsing (requires root or `kernel.dmesg_restrict=0`), and with
+  `--kill-on-deny` the kill stays in-kernel, so only the kmsg path applies.
+- **`filesystem_denied` and `network_denied` are predictions, not the kernel's
+  verdict.** The supervisor replays the profile rules against the accessed path
+  or TCP port (resolving cwd/dirfds and sockaddrs via `/proc`) but does not
+  chase symlinks the way Landlock does; enforcement always remains with
+  Landlock in the kernel. `network_denied` only applies when a
+  `--allow-connect-port`/`--allow-bind-port` allowlist is set.
 - **Resource limits require cgroups v2.** `--max-mem`/`--max-cpu`/`--max-pids`
   warn and continue if a writable cgroups v2 hierarchy is unavailable.
 

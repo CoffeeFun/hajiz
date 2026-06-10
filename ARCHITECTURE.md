@@ -61,7 +61,7 @@ src/
 │
 ├── telemetry/
 │   ├── event.rs                   SecurityEvent enum (PolicyApplied, SandboxStarted,
-│   │                              SyscallDenied, FilesystemDenied, ResourceUsage,
+│   │                              SyscallDenied, FilesystemDenied, NetworkDenied, ResourceUsage,
 │   │                              SandboxExited)
 │   ├── logger.rs                  TelemetryLogger (verbose stderr + JSON file),
 │   │                              policy_hash()
@@ -362,15 +362,46 @@ The parent process emits structured `SecurityEvent`s via `TelemetryLogger`:
 |---|---|---|
 | `SandboxStarted` | before spawn | pid, binary, profile, timestamp |
 | `PolicyApplied` | before spawn | blocked syscalls, allowed paths, feature list |
-| `SyscallDenied` | runtime (best effort) | pid, syscall name |
-| `FilesystemDenied` | runtime (currently unwired) | pid, path |
+| `SyscallDenied` | runtime | pid, syscall name |
+| `FilesystemDenied` | runtime (prediction, kernel ≥ 5.5) | pid, path |
+| `NetworkDenied` | runtime (prediction, kernel ≥ 5.5) | pid, operation, address, port |
 | `ResourceUsage` | every `sample_interval` | pid, mem, pids, cpu_usec |
 | `SandboxExited` | after wait | pid, exit_code, signal |
 
-`SyscallDenied` events come from a background thread reading `/dev/kmsg` and parsing `audit: type=1326` records. Best-effort: requires `kernel.dmesg_restrict=0` or `CAP_SYSLOG`. **Replacement candidates** (in order of complexity):
+### Denial telemetry: seccomp user notification
 
-1. **seccomp-notify** (simplest): switch the hardening filter from `SECCOMP_RET_ERRNO` to `SECCOMP_RET_USER_NOTIF`, read denials from the notify fd. No special privileges.
-2. **eBPF ringbuf**: attach `tracepoint/raw_syscalls/sys_exit` filtering on `ret == -EPERM`, drain via aya `RingBuf`. Catches any EPERM, not just seccomp.
+On kernel ≥ 5.0 the hardening filter is loaded with `SECCOMP_RET_USER_NOTIF`
+instead of `SECCOMP_RET_ERRNO` for the denied syscalls. The flow:
+
+1. The pre-exec child loads the filter, fetches the listener fd
+   (`seccomp_notify_fd`), marks it CLOEXEC so the target can never service its
+   own notifications, and sends it to the parent over a socketpair via
+   SCM_RIGHTS (`privesc::send_fds`) — the same primitive the audit broker uses.
+2. A supervisor thread in the parent (`telemetry/notify.rs`) polls the fd.
+   Hardened denials are logged as `SyscallDenied` and answered with `-EPERM`;
+   the calling thread in the sandbox observes a plain EPERM, exactly as with
+   `SECCOMP_RET_ERRNO`.
+3. With Landlock rules + an active telemetry consumer (`--log`/`--verbose`)
+   and kernel ≥ 5.5, filesystem syscalls (`open`/`openat`/`unlink`/`mkdir`/
+   `rename`/… families) are also notify-routed: the supervisor reads the path
+   from `/proc/<pid>/mem` (validating the notification id against pid reuse),
+   predicts the Landlock decision from the profile rules, emits
+   `FilesystemDenied` on a miss, and answers `SECCOMP_USER_NOTIF_FLAG_CONTINUE`
+   so the kernel executes the syscall normally — **Landlock remains the
+   enforcement point; the prediction is telemetry only** (it resolves cwd and
+   dirfds but does not chase symlinks like the kernel does).
+4. With a TCP-port allowlist active, `connect`/`bind` are notify-routed the same
+   way: the supervisor reads the sockaddr from `/proc/<pid>/mem`, predicts the
+   Landlock TCP-port decision, emits `NetworkDenied` on a miss, and answers
+   CONTINUE — again Landlock makes the real decision. Same prediction-only
+   contract as the filesystem path.
+
+Fallback: kernels < 5.0, `--kill-on-deny` (the kill action must stay
+in-kernel), and whitelist/strict modes use the previous path — a background
+thread reading `/dev/kmsg` and parsing `audit: type=1326` records, which
+requires `kernel.dmesg_restrict=0` or `CAP_SYSLOG`. A possible future upgrade
+is an eBPF ringbuf on `tracepoint/raw_syscalls/sys_exit` filtering
+`ret == -EPERM`, which would catch any EPERM, not just seccomp.
 
 ---
 
@@ -412,7 +443,7 @@ The eBPF backend doesn't have an automated test yet — running it needs root an
 
 ## 9. Known limitations / future work
 
-- `SyscallDenied` events rare at runtime — fix with seccomp-notify or eBPF ringbuf (above).
+- `FilesystemDenied` is a rule-based prediction (no symlink resolution); the kernel's own verdict is not observable without eBPF or Landlock audit (kernel ≥ 6.15).
 - No `CLONE_NEWPID` — `unshare(NEWPID)` only affects future children, not the exec'd binary. Would need a `setsid()` + double-fork + remount /proc dance.
 - Cgroups v2 partially wired: limits applied, telemetry samples, but no events on OOM/limit-hit.
 - eBPF audit: syscalls only, no path/network extraction (ringbuf migration is the path).
