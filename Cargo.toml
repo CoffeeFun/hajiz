@@ -3,7 +3,9 @@ name = "hajiz"
 version = "1.0.0"
 edition = "2024"
 description = "Secure application sandboxing system in Rust"
-license = "MIT"
+authors = ["Ahmad Swedan <swedam324@gmail.com>"]
+repository = "https://github.com/hag19/hajiiz"
+license = "MIT OR Apache-2.0"
 
 [features]
 default = ["ebpf"]
