@@ -16,6 +16,9 @@ CONTEXT.md
 CLAUDE.md
 graphify-out/
 
+# Container test corpus — local only, never pushed
+tests/container/
+
 
 # Rust
 *.rs.bk
